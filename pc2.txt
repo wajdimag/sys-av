@@ -1,0 +1,139 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <stdbool.h>
+#include <time.h>
+#include <unistd.h>
+
+#define NUM_PLAYERS 3
+#define MAX_ATTEMPTS 3
+
+// Variables globales
+int secretCode[4];
+int attempts[NUM_PLAYERS] = {0};  // Tentatives pour chaque joueur
+bool gameWon = false;
+sem_t semaphores[NUM_PLAYERS];
+pthread_mutex_t mutex;
+
+// Fonction pour générer un code secret sans répétition
+void generateSecretCode(int secretCode[]) {
+    bool used[10] = {false};
+    for (int i = 0; i < 4; i++) {
+        int num;
+        do {
+            num = rand() % 10;
+        } while (used[num]);
+        secretCode[i] = num;
+        used[num] = true;
+    }
+}
+
+// Fonction pour évaluer le nombre de taureaux et de vaches
+void evaluateGuess(int guess[], int *bulls, int *cows) {
+    *bulls = 0;
+    *cows = 0;
+    for (int i = 0; i < 4; i++) {
+        if (guess[i] == secretCode[i]) {
+            (*bulls)++;
+        } else {
+            for (int j = 0; j < 4; j++) {
+                if (i != j && guess[i] == secretCode[j]) {
+                    (*cows)++;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// Fonction du thread pour chaque joueur
+void* playerThread(void* arg) {
+    int playerId = *(int*)arg;
+    int guess[4];
+    int bulls = 0, cows = 0;
+
+    while (attempts[playerId] < MAX_ATTEMPTS && !gameWon) {
+        // Attendre le tour du joueur
+        sem_wait(&semaphores[playerId]);
+
+        if (gameWon) {
+            sem_post(&semaphores[(playerId + 1) % NUM_PLAYERS]);
+            break;
+        }
+
+        pthread_mutex_lock(&mutex);
+        printf("\nJoueur %d, entrez votre devinette (4 chiffres) : ", playerId + 1);
+        for (int i = 0; i < 4; i++) {
+            scanf("%d", &guess[i]);
+        }
+
+        attempts[playerId]++;
+        evaluateGuess(guess, &bulls, &cows);
+        printf("Taureaux : %d, Vaches : %d\n", bulls, cows);
+
+        if (bulls == 4) {
+            printf("\nFélicitations Joueur %d ! Vous avez trouvé le nombre secret en %d tentatives.\n", playerId + 1, attempts[playerId]);
+            gameWon = true;
+        } else if (attempts[playerId] == MAX_ATTEMPTS) {
+            printf("Joueur %d a épuisé ses %d tentatives.\n", playerId + 1, MAX_ATTEMPTS);
+        }
+
+        pthread_mutex_unlock(&mutex);
+
+        // Passer le tour au joueur suivant
+        sem_post(&semaphores[(playerId + 1) % NUM_PLAYERS]);
+    }
+
+    return NULL;
+}
+
+int main() {
+    srand(time(NULL));
+    generateSecretCode(secretCode);
+
+    // Initialiser les sémaphores pour chaque joueur
+    for (int i = 0; i < NUM_PLAYERS; i++) {
+        sem_init(&semaphores[i], 0, (i == 0) ? 1 : 0);
+    }
+    pthread_mutex_init(&mutex, NULL);
+
+    printf("Bienvenue dans le jeu Taureau-Vache pour %d joueurs !\n", NUM_PLAYERS);
+   
+    // Enregistrer l'heure de début
+    time_t startTime = time(NULL);
+
+    pthread_t threads[NUM_PLAYERS];
+    int playerIds[NUM_PLAYERS];
+
+    // Créer un thread pour chaque joueur
+    for (int i = 0; i < NUM_PLAYERS; i++) {
+        playerIds[i] = i;
+        pthread_create(&threads[i], NULL, playerThread, &playerIds[i]);
+    }
+
+    // Attendre la fin des threads
+    for (int i = 0; i < NUM_PLAYERS; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    // Enregistrer l'heure de fin
+    time_t endTime = time(NULL);
+    double gameDuration = difftime(endTime, startTime);
+
+    // Vérifier si le jeu est terminé
+    if (!gameWon) {
+        printf("\nGame Over! Aucun joueur n'a trouvé le nombre secret. Essayez de nouveau!\n");
+    }
+
+    // Afficher le temps total d'exécution
+    printf("\nTemps total d'exécution du jeu : %.2f secondes\n", gameDuration);
+
+    // Détruire les sémaphores et le mutex
+    for (int i = 0; i < NUM_PLAYERS; i++) {
+        sem_destroy(&semaphores[i]);
+    }
+    pthread_mutex_destroy(&mutex);
+
+    return 0;
+}
