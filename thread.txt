@@ -1,0 +1,156 @@
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <stdbool.h>
+#include <pthread.h>
+#include <unistd.h>
+
+// Constantes
+#define NUM_PLAYERS 3
+#define MAX_ATTEMPTS 3
+
+// Structures pour synchronisation
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+
+int secretCode[4];
+int currentPlayer = 0;
+int attempts[NUM_PLAYERS] = {0};
+bool gameWon = false;
+time_t startTime, endTime;
+
+// Fonction pour générer un code secret sans répétition
+void generateSecretCode(int secretCode[]) {
+    bool used[10] = { false };
+    for (int i = 0; i < 4; i++) {
+        int num;
+        do {
+            num = rand() % 10;
+        } while (used[num]);
+        secretCode[i] = num;
+        used[num] = true;
+    }
+}
+
+// Fonction pour évaluer le nombre de taureaux et de vaches
+void evaluateGuess(int guess[], int *bulls, int *cows) {
+    *bulls = 0;
+    *cows = 0;
+    bool guessUsed[4] = { false }, secretUsed[4] = { false };
+
+    // Calcul des taureaux
+    for (int i = 0; i < 4; i++) {
+        if (guess[i] == secretCode[i]) {
+            (*bulls)++;
+            guessUsed[i] = true;
+            secretUsed[i] = true;
+        }
+    }
+
+    // Calcul des vaches
+    for (int i = 0; i < 4; i++) {
+        if (!guessUsed[i]) {
+            for (int j = 0; j < 4; j++) {
+                if (!secretUsed[j] && guess[i] == secretCode[j]) {
+                    (*cows)++;
+                    secretUsed[j] = true;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// Fonction du thread pour chaque joueur
+void* playerThread(void* arg) {
+    int playerId = *(int*)arg;
+    int guess[4];
+    int bulls = 0, cows = 0;
+
+    while (!gameWon) {
+        pthread_mutex_lock(&mutex);
+
+        // Attendre son tour
+        while (currentPlayer != playerId && !gameWon) {
+            pthread_cond_wait(&cond, &mutex);
+        }
+
+        if (gameWon) {
+            pthread_mutex_unlock(&mutex);
+            break;
+        }
+
+        // Demander la tentative du joueur
+        if (attempts[playerId] < MAX_ATTEMPTS) {
+            printf("\nJoueur %d, entrez votre devinette (4 chiffres) : ", playerId + 1);
+            for (int i = 0; i < 4; i++) {
+                scanf("%d", &guess[i]);
+            }
+
+            attempts[playerId]++;
+            evaluateGuess(guess, &bulls, &cows);
+            printf("Taureaux : %d, Vaches : %d\n", bulls, cows);
+
+            if (bulls == 4) {
+                gameWon = true;
+                printf("\nFélicitations Joueur %d ! Vous avez trouvé le nombre secret en %d tentatives.\n", playerId + 1, attempts[playerId]);
+            } else if (attempts[playerId] == MAX_ATTEMPTS) {
+                printf("Joueur %d a épuisé ses %d tentatives.\n", playerId + 1, MAX_ATTEMPTS);
+            }
+        }
+
+        // Passer au joueur suivant
+        currentPlayer = (currentPlayer + 1) % NUM_PLAYERS;
+
+        // Vérifier si tous les joueurs ont épuisé leurs tentatives
+        if (attempts[0] == MAX_ATTEMPTS && attempts[1] == MAX_ATTEMPTS && attempts[2] == MAX_ATTEMPTS) {
+            break;
+        }
+
+        pthread_cond_broadcast(&cond);
+        pthread_mutex_unlock(&mutex);
+    }
+
+    pthread_cond_broadcast(&cond);
+    pthread_mutex_unlock(&mutex);
+    return NULL;
+}
+
+int main() {
+    srand(time(NULL));
+
+    // Générer le code secret
+    generateSecretCode(secretCode);
+
+    printf("Bienvenue dans le jeu Taureau-Vache pour %d joueurs !\n", NUM_PLAYERS);
+    printf("Devinez le nombre secret de 4 chiffres (sans répétition).\n");
+
+    // Enregistrer le temps de début
+    time(&startTime);
+
+    pthread_t threads[NUM_PLAYERS];
+    int playerIds[NUM_PLAYERS];
+
+    // Créer les threads pour chaque joueur
+    for (int i = 0; i < NUM_PLAYERS; i++) {
+        playerIds[i] = i;
+        pthread_create(&threads[i], NULL, playerThread, &playerIds[i]);
+    }
+
+    // Attendre la fin des threads
+    for (int i = 0; i < NUM_PLAYERS; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    // Enregistrer le temps de fin et afficher le temps total d'exécution
+    time(&endTime);
+    double gameDuration = difftime(endTime, startTime);
+
+    if (!gameWon) {
+        printf("\nGame Over! Aucun joueur n'a trouvé le nombre secret.\n");
+    }
+    printf("\nTemps total d'exécution du jeu : %.2f secondes\n", gameDuration);
+
+    return 0;
+}

@@ -1,0 +1,174 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <stdbool.h>
+
+// Fonction pour générer un code secret unique à 4 chiffres sans répétition
+void generateSecretCode(int secretCode[]) {
+    bool used[10] = { false };
+    for (int i = 0; i < 4; i++) {
+        int num;
+        do {
+            num = rand() % 10;
+        } while (used[num]);
+        secretCode[i] = num;
+        used[num] = true;
+    }
+}
+
+// Fonction pour évaluer les taureaux et les vaches
+void evaluateGuess(int guess[], int secretCode[], int *bulls, int *cows) {
+    *bulls = 0;
+    *cows = 0;
+    bool guessUsed[4] = { false }, secretUsed[4] = { false };
+
+    // Calcul des taureaux
+    for (int i = 0; i < 4; i++) {
+        if (guess[i] == secretCode[i]) {
+            (*bulls)++;
+            guessUsed[i] = true;
+            secretUsed[i] = true;
+        }
+    }
+
+    // Calcul des vaches
+    for (int i = 0; i < 4; i++) {
+        if (!guessUsed[i]) {
+            for (int j = 0; j < 4; j++) {
+                if (!secretUsed[j] && guess[i] == secretCode[j]) {
+                    (*cows)++;
+                    secretUsed[j] = true;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// Fonction pour chaque joueur (processus enfant)
+void playerProcess(int playerId, int readPipe[], int writePipe[]) {
+    int guess[4];
+    int bulls, cows;
+    int attempts = 0;
+
+    close(readPipe[1]); // Fermer l'extrémité d'écriture
+    close(writePipe[0]); // Fermer l'extrémité de lecture
+
+    while (attempts < 3) {
+        // Lire le code secret
+        int secretCode[4];
+        read(readPipe[0], secretCode, sizeof(secretCode));
+
+        // Prendre la saisie du joueur
+        printf("\nJoueur %d, entrez votre devinette (4 chiffres) : ", playerId + 1);
+        for (int i = 0; i < 4; i++) {
+            scanf("%d", &guess[i]);
+        }
+
+        // Envoyer la tentative au parent
+        write(writePipe[1], guess, sizeof(guess));
+
+        // Lire le nombre de taureaux et de vaches
+        read(readPipe[0], &bulls, sizeof(int));
+        read(readPipe[0], &cows, sizeof(int));
+
+        printf("Joueur %d - Taureaux : %d, Vaches : %d\n", playerId + 1, bulls, cows);
+
+        if (bulls == 4) {
+            printf("Félicitations Joueur %d, vous avez gagné !\n", playerId + 1);
+            exit(0);
+        }
+
+        attempts++;
+    }
+
+    printf("Joueur %d a épuisé ses 3 tentatives.\n", playerId + 1);
+    exit(0);
+}
+
+int main() {
+    srand(time(NULL));
+
+    int secretCode[4];
+    generateSecretCode(secretCode);
+
+    int pipes[3][2][2]; // [joueur][lecture/écriture][pipe]
+    pid_t pids[3];
+
+    // Création des pipes
+    for (int i = 0; i < 3; i++) {
+        pipe(pipes[i][0]);
+        pipe(pipes[i][1]);
+    }
+
+    // Enregistrer le temps de début
+    time_t startTime = time(NULL);
+
+    // Création des processus enfants
+    for (int i = 0; i < 3; i++) {
+        pids[i] = fork();
+        if (pids[i] == 0) {
+            playerProcess(i, pipes[i][0], pipes[i][1]);
+        }
+    }
+
+    int bulls = 0, cows = 0;
+    int player = 0;
+    int attempts[3] = {0, 0, 0};
+    bool gameWon = false;
+
+    // Boucle principale du jeu
+    while (true) {
+        // Envoyer le code secret au joueur
+        write(pipes[player][0][1], secretCode, sizeof(secretCode));
+
+        // Lire la tentative du joueur
+        int guess[4];
+        read(pipes[player][1][0], guess, sizeof(guess));
+
+        // Évaluer la tentative
+        evaluateGuess(guess, secretCode, &bulls, &cows);
+
+        // Envoyer le résultat au joueur
+        write(pipes[player][0][1], &bulls, sizeof(int));
+        write(pipes[player][0][1], &cows, sizeof(int));
+
+        // Vérifier si le joueur a gagné
+        if (bulls == 4) {
+            printf("\nJoueur %d a trouvé le nombre secret en %d tentatives ! Fin du jeu.\n", player + 1, attempts[player] + 1);
+            gameWon = true;
+            break;
+        }
+
+        attempts[player]++;
+        if (attempts[player] == 3) {
+            printf("Joueur %d a épuisé ses 3 tentatives.\n", player + 1);
+        }
+
+        // Passer au joueur suivant
+        player = (player + 1) % 3;
+
+        // Vérifier si tous les joueurs ont épuisé leurs tentatives
+        if (attempts[0] == 3 && attempts[1] == 3 && attempts[2] == 3) {
+            break;
+        }
+    }
+
+    // Calculer et afficher le temps total d'exécution
+    time_t endTime = time(NULL);
+    double gameDuration = difftime(endTime, startTime);
+
+    if (!gameWon) {
+        printf("\nGame Over! Aucun joueur n'a trouvé le nombre secret.\n");
+    }
+    printf("\nTemps total d'exécution du jeu : %.2f secondes\n", gameDuration);
+
+    // Attendre que tous les processus enfants se terminent
+    for (int i = 0; i < 3; i++) {
+        wait(NULL);
+    }
+
+    return 0;
+}
